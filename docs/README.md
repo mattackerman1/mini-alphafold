@@ -13,6 +13,7 @@ of each component to make good engineering decisions during implementation.
 | [alphafold2_overview.md](alphafold2_overview.md) | What AlphaFold2 is, why it was a breakthrough, and its scientific and practical impact |
 | [key_papers.md](key_papers.md) | Structured summaries of the landmark papers (AF1 and AF2), with authors, venues, and key contributions |
 | [key_techniques.md](key_techniques.md) | Deep-dive explanations of every major technical innovation: MSA processing, Evoformer, pair representations, Structure Module, recycling, FAPE loss, and more |
+| [multi_agent_workflow.md](multi_agent_workflow.md) | Full agent role definitions, handoff protocols, GitHub label schema, issue and PR templates, and interaction rules |
 
 ## How to use these notes
 
