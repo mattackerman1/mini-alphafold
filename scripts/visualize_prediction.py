@@ -14,7 +14,7 @@ from src.data.msa_encoder import encode_single_sequence
 
 def visualize_prediction(checkpoint_path: str, pdb_id: str):
     # 1. Load ground truth
-    gt_data = parse_structure_file(f"https://files.rcsb.org/download/{pdb_id}.pdb")
+    gt_data = parse_structure_file(f"{pdb_id}")
     gt_coords = gt_data.coords  # (L, 4, 3)  [N, CA, C, O]
 
     # 2. Load model + checkpoint
