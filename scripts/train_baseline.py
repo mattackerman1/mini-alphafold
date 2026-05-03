@@ -1,15 +1,27 @@
 """
 Baseline training script for secondary structure prediction.
 
-Uses synthetic data by default so the script runs immediately without any
-external dataset.  Replace the `build_synthetic_dataset` call with real data
-once the CATH / SCOPe loader exists (Phase 0).
+Data sources
+------------
+  Synthetic (default):  random sequences + random labels, no download needed.
+  Real data (--real-data): downloads proteinea/secondary_structure_prediction
+                            from Hugging Face (~20 MB, cached after first use).
 
 Usage
 -----
-  python scripts/train_baseline.py                      # BiLSTM, SS3, synthetic
-  python scripts/train_baseline.py --model transformer  # Transformer variant
-  python scripts/train_baseline.py --epochs 20 --lr 3e-4 --batch-size 32
+  # Synthetic data (quick smoke-test)
+  python scripts/train_baseline.py
+
+  # Real SS3 data
+  python scripts/train_baseline.py --real-data
+
+  # Real SS8 data, Transformer, more epochs
+  python scripts/train_baseline.py --real-data --ss-type ss8 --model transformer --epochs 20
+
+  # Limit real data size for a fast trial run
+  python scripts/train_baseline.py --real-data --max-samples 500
+
+  # Full options
   python scripts/train_baseline.py --help
 """
 
@@ -24,17 +36,17 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from torch import Tensor
-from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, random_split
 
 # Make the repo root importable when running as a script
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.data.protein_dataset import PAD_IDX, ProteinDataset
+from src.data.loaders import SS3_LABEL_MAP, SS8_LABEL_MAP, collate_fn, load_ss_dataset
 from src.models.baseline import SS3_CLASSES, SS8_CLASSES, ModelKind, build_model
 
 # ---------------------------------------------------------------------------
-# Synthetic dataset (placeholder until real data loader is ready)
+# Synthetic dataset (no download required — useful for CI and quick tests)
 # ---------------------------------------------------------------------------
 
 _AA = "ACDEFGHIKLMNPQRSTVWY"
@@ -47,10 +59,7 @@ def build_synthetic_dataset(
     n_classes: int = SS3_CLASSES,
     seed: int = 42,
 ) -> ProteinDataset:
-    """Generate random amino acid sequences with random SS labels.
-
-    This is purely for smoke-testing the training pipeline.
-    """
+    """Generate random amino acid sequences with random per-residue SS labels."""
     rng = random.Random(seed)
     sequences, labels = [], []
     for _ in range(n):
@@ -66,28 +75,24 @@ def build_synthetic_dataset(
 # DataLoader helpers
 # ---------------------------------------------------------------------------
 
-def collate_fn(batch: list[tuple[Tensor, Tensor]]) -> tuple[Tensor, Tensor]:
-    """Pad a batch of (tokens, labels) pairs to the same length."""
-    seqs, lbls = zip(*batch)
-    return (
-        pad_sequence(seqs, batch_first=True, padding_value=PAD_IDX),
-        pad_sequence(lbls, batch_first=True, padding_value=-1),   # -1 → ignored by loss
-    )
-
-
 def make_loaders(
     dataset: ProteinDataset,
     val_fraction: float = 0.15,
     batch_size: int = 16,
     seed: int = 42,
 ) -> tuple[DataLoader, DataLoader]:
+    """Split dataset into train/val DataLoaders with padding collation."""
     n_val = max(1, int(len(dataset) * val_fraction))
     n_train = len(dataset) - n_val
     train_ds, val_ds = random_split(
         dataset, [n_train, n_val], generator=torch.Generator().manual_seed(seed)
     )
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_fn
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn
+    )
     return train_loader, val_loader
 
 
@@ -105,7 +110,7 @@ def run_epoch(
     """Run one full pass over `loader`.
 
     Returns:
-        (mean_loss, accuracy) — both scalars, accuracy ignores PAD positions.
+        (mean_loss, accuracy) where accuracy ignores PAD and -1 label positions.
     """
     training = optimizer is not None
     model.train() if training else model.eval()
@@ -154,29 +159,40 @@ def train(args: argparse.Namespace) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    # --- data ---
-    print("Building synthetic dataset...")
-    dataset = build_synthetic_dataset(n=args.n_samples, n_classes=args.n_classes)
+    # --- data source ---
+    n_classes = SS8_CLASSES if args.ss_type == "ss8" else SS3_CLASSES
+
+    if args.real_data:
+        dataset = load_ss_dataset(
+            ss_type=args.ss_type,
+            max_samples=args.max_samples,
+        )
+    else:
+        print(f"Building synthetic dataset ({args.n_samples} sequences)…")
+        dataset = build_synthetic_dataset(n=args.n_samples, n_classes=n_classes)
+
     train_loader, val_loader = make_loaders(
         dataset, batch_size=args.batch_size, val_fraction=0.15
     )
     print(
-        f"  Train: {len(train_loader.dataset)} samples | "  # type: ignore[arg-type]
-        f"Val: {len(val_loader.dataset)} samples"           # type: ignore[arg-type]
+        f"  Train: {len(train_loader.dataset):,} samples | "  # type: ignore[arg-type]
+        f"Val:   {len(val_loader.dataset):,} samples"          # type: ignore[arg-type]
     )
 
     # --- model ---
-    model = build_model(kind=args.model, n_classes=args.n_classes).to(device)
-    print(f"Model: {args.model}  |  Parameters: {model.count_parameters():,}")
+    model = build_model(kind=args.model, n_classes=n_classes).to(device)
+    print(f"Model: {args.model}  |  Classes: {n_classes}  |  Parameters: {model.count_parameters():,}")
 
-    # --- loss: ignore padding (-1) and weight classes equally ---
+    # --- optimisation ---
+    # CrossEntropyLoss ignores -1 labels (padded positions and unknown chars)
     criterion = nn.CrossEntropyLoss(ignore_index=-1)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     # --- loop ---
     best_val_acc = 0.0
-    print(f"\n{'Epoch':>5}  {'Train Loss':>10}  {'Train Acc':>9}  {'Val Loss':>8}  {'Val Acc':>7}  {'Time':>6}")
+    header = f"\n{'Epoch':>5}  {'Train Loss':>10}  {'Train Acc':>9}  {'Val Loss':>8}  {'Val Acc':>7}  {'Time':>6}"
+    print(header)
     print("-" * 62)
 
     for epoch in range(1, args.epochs + 1):
@@ -196,11 +212,19 @@ def train(args: argparse.Namespace) -> None:
 
     print(f"\nBest val accuracy: {best_val_acc:.1%}")
 
-    # --- optional checkpoint save ---
+    # --- optional checkpoint ---
     if args.save:
         save_path = Path(args.save)
         save_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({"model_state": model.state_dict(), "args": vars(args)}, save_path)
+        torch.save(
+            {
+                "model_state": model.state_dict(),
+                "args": vars(args),
+                "n_classes": n_classes,
+                "ss_type": args.ss_type,
+            },
+            save_path,
+        )
         print(f"Checkpoint saved to {save_path}")
 
 
@@ -209,21 +233,47 @@ def train(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train baseline secondary structure model")
-    p.add_argument("--model", choices=["bilstm", "transformer"], default="bilstm",
-                   help="Model architecture (default: bilstm)")
-    p.add_argument("--n-classes", type=int, choices=[3, 8], default=SS3_CLASSES,
-                   help="Number of SS classes: 3 (SS3) or 8 (SS8) (default: 3)")
-    p.add_argument("--epochs", type=int, default=10,
-                   help="Number of training epochs (default: 10)")
-    p.add_argument("--batch-size", type=int, default=16,
-                   help="Batch size (default: 16)")
-    p.add_argument("--lr", type=float, default=1e-3,
-                   help="Learning rate (default: 1e-3)")
-    p.add_argument("--n-samples", type=int, default=512,
-                   help="Number of synthetic sequences (default: 512)")
-    p.add_argument("--save", type=str, default=None,
-                   help="Path to save model checkpoint, e.g. checkpoints/baseline.pt")
+    p = argparse.ArgumentParser(
+        description="Train baseline secondary structure model",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+
+    # Data
+    data = p.add_argument_group("data")
+    data.add_argument(
+        "--real-data", action="store_true",
+        help="Load real data from Hugging Face instead of synthetic sequences",
+    )
+    data.add_argument(
+        "--ss-type", choices=["ss3", "ss8"], default="ss3",
+        help="Secondary structure label set (only used with --real-data)",
+    )
+    data.add_argument(
+        "--max-samples", type=int, default=None,
+        help="Cap number of real sequences loaded (default: all ~10,800)",
+    )
+    data.add_argument(
+        "--n-samples", type=int, default=512,
+        help="Number of synthetic sequences (ignored with --real-data)",
+    )
+
+    # Model
+    model = p.add_argument_group("model")
+    model.add_argument(
+        "--model", choices=["bilstm", "transformer"], default="bilstm",
+        help="Model architecture",
+    )
+
+    # Training
+    train_g = p.add_argument_group("training")
+    train_g.add_argument("--epochs",     type=int,   default=10)
+    train_g.add_argument("--batch-size", type=int,   default=16)
+    train_g.add_argument("--lr",         type=float, default=1e-3)
+    train_g.add_argument(
+        "--save", type=str, default=None,
+        help="Path to save checkpoint, e.g. checkpoints/baseline.pt",
+    )
+
     return p.parse_args()
 
 
