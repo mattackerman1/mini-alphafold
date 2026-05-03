@@ -17,21 +17,27 @@ def visualize_prediction(checkpoint_path: str, pdb_id: str):
     gt_data = parse_structure_file(f"{pdb_id}")
     gt_coords = gt_data.coords  # (L, 4, 3)  [N, CA, C, O]
 
-    # 2. Load model + checkpoint (robust to different saving formats)
+    # 2. Load model + checkpoint (robust version)
+    # Create the model FIRST (using the full MSA-aware version)
+    model = build_msa_structure_model(
+        n_blocks=4,
+        c_m=128,
+        c_z=64,
+        use_triangle=True
+    )
+
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-    
-    # Handle common checkpoint formats
+
+    # Handle different checkpoint saving formats
     if isinstance(checkpoint, dict):
         if 'model_state_dict' in checkpoint:
             state_dict = checkpoint['model_state_dict']
         elif 'state_dict' in checkpoint:
             state_dict = checkpoint['state_dict']
-        elif 'model' in checkpoint:
-            state_dict = checkpoint['model']
         else:
-            state_dict = checkpoint          # assume the whole dict is the state dict
+            state_dict = checkpoint
     else:
-        state_dict = checkpoint              # raw state_dict was saved directly
+        state_dict = checkpoint
 
     model.load_state_dict(state_dict)
     model.eval()
