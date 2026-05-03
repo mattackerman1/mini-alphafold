@@ -96,6 +96,18 @@ class BiLSTMModel(nn.Module):
         # Bidirectional doubles the output dim
         self.head = ResidueHead(hidden_dim * 2, n_classes, dropout=dropout)
 
+    def encode(self, tokens: Tensor) -> Tensor:
+        """Return per-residue hidden states before the classification head.
+
+        Args:
+            tokens: (batch, seq_len)
+        Returns:
+            h: (batch, seq_len, 2*hidden_dim)
+        """
+        x = self.embedding(tokens)
+        x, _ = self.lstm(x)
+        return x
+
     def forward(self, tokens: Tensor) -> Tensor:
         """
         Args:
@@ -103,9 +115,7 @@ class BiLSTMModel(nn.Module):
         Returns:
             logits: (batch, seq_len, n_classes)
         """
-        x = self.embedding(tokens)           # (B, L, embed_dim)
-        x, _ = self.lstm(x)                  # (B, L, 2*hidden_dim)
-        return self.head(x)                  # (B, L, n_classes)
+        return self.head(self.encode(tokens))
 
     def count_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -181,6 +191,19 @@ class TransformerModel(nn.Module):
         )
         self.head = ResidueHead(d_model, n_classes, dropout=dropout)
 
+    def encode(self, tokens: Tensor) -> Tensor:
+        """Return per-residue hidden states before the classification head.
+
+        Args:
+            tokens: (batch, seq_len)
+        Returns:
+            h: (batch, seq_len, d_model)
+        """
+        pad_mask = tokens == self.padding_idx
+        x = self.embedding(tokens)
+        x = self.pos_enc(x)
+        return self.encoder(x, src_key_padding_mask=pad_mask)
+
     def forward(self, tokens: Tensor) -> Tensor:
         """
         Args:
@@ -188,13 +211,7 @@ class TransformerModel(nn.Module):
         Returns:
             logits: (batch, seq_len, n_classes)
         """
-        # Build padding mask: True where token == PAD (encoder ignores these)
-        pad_mask = tokens == self.padding_idx                # (B, L)
-
-        x = self.embedding(tokens)                          # (B, L, d_model)
-        x = self.pos_enc(x)
-        x = self.encoder(x, src_key_padding_mask=pad_mask)  # (B, L, d_model)
-        return self.head(x)                                  # (B, L, n_classes)
+        return self.head(self.encode(tokens))
 
     def count_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
