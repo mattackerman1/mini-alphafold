@@ -3,18 +3,21 @@ End-to-end MSA-aware 3D structure prediction (Phase 3).
 
 Pipeline
 --------
-  MSA features  →  EvoformerStack  →  query_repr (B, L, c_m)
-                                    →  CoordHead  →  (B, L, 3)  Cα coords
-                                    →  FrameHead  →  (B, L, 3, 3) rotations
+  MSA features  ->  EvoformerStack  ->  query_repr (B, L, c_m)
+                                      ->  CoordHead  ->  (B, L, 3)  Ca coords
+                                      ->  FrameHead  ->  (B, L, 3, 3) rotations
   Loss: FAPE (Frame-Aligned Point Error, AF2 §1.9.1)
   Eval: Kabsch-aligned TM-score and GDT-TS
 
 Data sources
 ------------
   Synthetic (default):  random sequences with helix-like coordinates.
-                         No download needed — validates the full pipeline.
+                         No download needed -- validates the full pipeline.
   Real (--pdb-ids):     PDB IDs downloaded from RCSB; pseudo-MSAs are
                          generated automatically (no external MSA tool needed).
+  Large-scale cached (--dataset-cache):
+                         Uses LargeStructureDataset with ~300 curated PDB IDs,
+                         gzip-compressed disk caching, and parallel downloads.
 
 Usage
 -----
@@ -26,6 +29,16 @@ Usage
       --pdb-ids 1UBQ,1CRN,4HHB,1L2Y,1VII \\
       --n-blocks 4 --c-m 64 --c-z 32 \\
       --epochs 30 --lr 5e-4 --n-pseudo 16 --save ckpt_phase3.pt
+
+  # Large-scale training with 300 PDB structures, TensorBoard, warmup LR
+  python scripts/train_end_to_end.py \\
+      --dataset-cache ~/.cache/mini_alphafold/structures \\
+      --n-blocks 4 --c-m 128 --c-z 64 \\
+      --epochs 100 --batch-size 8 --lr 3e-4 \\
+      --num-workers 4 --pin-memory \\
+      --warmup-steps 500 \\
+      --log-dir runs/phase3_large \\
+      --ckpt-every 5 --save ckpt_phase3_large.pt
 
   # Disable triangle updates (faster, ablation)
   python scripts/train_end_to_end.py --no-triangle
@@ -58,6 +71,22 @@ from src.data.protein_dataset import PAD_IDX, tokenize
 from src.models.structure_module import StructureOutput, build_msa_structure_model
 from src.training.losses import backbone_rmsd, fape_loss, make_backbone_frames
 
+# ---------------------------------------------------------------------------
+# TensorBoard (optional)
+# ---------------------------------------------------------------------------
+
+try:
+    from torch.utils.tensorboard import SummaryWriter as _SummaryWriter  # type: ignore[import]
+    _TB_AVAILABLE = True
+except ImportError:
+    _TB_AVAILABLE = False
+
+    class _SummaryWriter:  # type: ignore[no-redef]
+        """No-op fallback when tensorboard is not installed."""
+        def __init__(self, *a, **kw): pass
+        def add_scalar(self, *a, **kw): pass
+        def close(self): pass
+
 
 # ---------------------------------------------------------------------------
 # Combined MSA + structure dataset
@@ -71,7 +100,7 @@ class MSAStructureDataset(Dataset):
 
     Args:
         sequences:     List of amino-acid strings.
-        coords:        List of (L, 4, 3) float32 tensors — atom order [N, CA, C, O].
+        coords:        List of (L, 4, 3) float32 tensors -- atom order [N, CA, C, O].
         n_pseudo:      Number of pseudo-MSA homologues per query (default 8).
         mutation_rate: Per-residue substitution rate for pseudo-MSA (default 0.15).
         seed:          Optional RNG seed for reproducible pseudo-MSAs.
@@ -116,8 +145,8 @@ def collate_msa_structure(
     Returns:
         tokens:  (B, L_max) long
         msa:     (B, N_seq, L_max, 45) float32
-        coords:  (B, L_max, 4, 3) float32 — padded with zeros
-        lengths: (B,) long — actual sequence length per sample
+        coords:  (B, L_max, 4, 3) float32 -- padded with zeros
+        lengths: (B,) long -- actual sequence length per sample
     """
     tokens_list, msa_list, coords_list = zip(*batch)
 
@@ -127,16 +156,13 @@ def collate_msa_structure(
     N_seq   = msa_list[0].shape[0]
     feat_dim = msa_list[0].shape[2]
 
-    # Pad tokens
     tokens = pad_sequence(tokens_list, batch_first=True, padding_value=PAD_IDX)
 
-    # Pad MSA features: (B, N_seq, L_max, feat_dim)
     msa = torch.zeros(B, N_seq, L_max, feat_dim)
     for b, m in enumerate(msa_list):
         L_b = m.shape[1]
         msa[b, :, :L_b, :] = m
 
-    # Pad backbone coordinates: (B, L_max, 4, 3)
     coords = torch.zeros(B, L_max, 4, 3, dtype=torch.float32)
     for b, c in enumerate(coords_list):
         L_b = c.shape[0]
@@ -153,7 +179,7 @@ _AA = "ACDEFGHIKLMNPQRSTVWY"
 
 
 def _helix_coords(length: int) -> Tensor:
-    """Approximate alpha-helix backbone (all 4 atoms placed near Cα)."""
+    """Approximate alpha-helix backbone (all 4 atoms placed near Ca)."""
     coords = torch.zeros(length, 4, 3)
     r, rise, twist = 2.3, 1.5, math.radians(100)
     for i in range(length):
@@ -190,7 +216,7 @@ def build_synthetic_msa_dataset(
 
 
 # ---------------------------------------------------------------------------
-# Real PDB data
+# Real PDB data (small set, direct download)
 # ---------------------------------------------------------------------------
 
 def build_real_msa_dataset(
@@ -216,7 +242,7 @@ def build_real_msa_dataset(
             data = parse_structure_file(tmp_path)
             tmp_path.unlink(missing_ok=True)
         except Exception as exc:
-            print(f"  WARNING: skipping {pdb_id} — {exc}")
+            print(f"  WARNING: skipping {pdb_id} -- {exc}")
             continue
         sequences.append(data.sequence)
         coords_list.append(data.coords)
@@ -229,6 +255,54 @@ def build_real_msa_dataset(
         sequences, coords_list,
         n_pseudo=n_pseudo, mutation_rate=mutation_rate, seed=seed,
     )
+
+
+# ---------------------------------------------------------------------------
+# Large-scale cached dataset
+# ---------------------------------------------------------------------------
+
+def build_cached_dataset(
+    cache_dir:    str,
+    n_pseudo:     int   = 8,
+    mutation_rate: float = 0.15,
+    n_workers:    int   = 8,
+    seed:         int   = 42,
+    min_len:      int   = 30,
+    max_len:      int   = 300,
+    val_fraction: float = 0.1,
+):
+    """Build train/val datasets from the curated ~300-structure cache.
+
+    Downloads missing structures in parallel, caches as gzip pickles, then
+    returns (train_ds, val_ds) as LargeStructureDataset objects.
+
+    Args:
+        cache_dir:    Path to disk cache (created if absent).
+        n_pseudo:     Pseudo-MSA homologues per query.
+        mutation_rate: Per-residue mutation rate for pseudo-MSA.
+        n_workers:    Parallel download workers.
+        seed:         RNG seed for train/val split.
+        min_len / max_len: Length filter applied during loading.
+        val_fraction: Fraction of data reserved for validation.
+
+    Returns:
+        (train_ds, val_ds) — LargeStructureDataset instances.
+    """
+    from src.data.structure_dataset import build_large_dataset
+
+    print(f"Loading large-scale dataset from cache: {cache_dir}")
+    train_ds, val_ds = build_large_dataset(
+        cache_dir=cache_dir,
+        n_pseudo=n_pseudo,
+        mutation_rate=mutation_rate,
+        n_workers=n_workers,
+        seed=seed,
+        min_len=min_len,
+        max_len=max_len,
+        val_fraction=val_fraction,
+    )
+    print(f"  Train: {len(train_ds):,} | Val: {len(val_ds):,}")
+    return train_ds, val_ds
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +355,25 @@ def gdt_ts(pred_ca: Tensor, true_ca: Tensor, mask: Tensor) -> float:
 
 
 # ---------------------------------------------------------------------------
+# LR schedule: linear warmup + cosine decay
+# ---------------------------------------------------------------------------
+
+def make_lr_scheduler(
+    optimizer: torch.optim.Optimizer,
+    warmup_steps: int,
+    total_steps: int,
+) -> torch.optim.lr_scheduler.LambdaLR:
+    """Step-level schedule: linearly warm up, then cosine decay to 0."""
+    def _lr_lambda(step: int) -> float:
+        if warmup_steps > 0 and step < warmup_steps:
+            return step / warmup_steps
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, _lr_lambda)
+
+
+# ---------------------------------------------------------------------------
 # One epoch
 # ---------------------------------------------------------------------------
 
@@ -290,6 +383,7 @@ def run_epoch(
     optimizer: Optional[torch.optim.Optimizer],
     device:    torch.device,
     d_clamp:   float,
+    scheduler: Optional[torch.optim.lr_scheduler.LambdaLR] = None,
 ) -> tuple[float, float, float, float]:
     """Run one train or eval epoch.  Returns (fape, rmsd, tm, gdt)."""
     training = optimizer is not None
@@ -310,7 +404,6 @@ def run_epoch(
                 < lengths.to(device).unsqueeze(1)
             )
 
-            # Forward: MSA path when msa_features provided
             out: StructureOutput = model(tokens, msa_features=msa)
             true_R, true_t = make_backbone_frames(coords)
 
@@ -328,6 +421,8 @@ def run_epoch(
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+                if scheduler is not None:
+                    scheduler.step()
 
             total_fape += loss.item() * tokens.size(0)
             all_pred.append(out.ca_coords.detach().cpu())
@@ -336,11 +431,9 @@ def run_epoch(
 
     n = len(loader.dataset)  # type: ignore[arg-type]
 
-    # Pad all batches to the same L for metric aggregation
     max_L = max(t.size(1) for t in all_pred)
 
     def _pad_ca(t: Tensor) -> Tensor:
-        # (B, L, 3) → (B, max_L, 3): pad the L dimension
         gap = max_L - t.size(1)
         return torch.nn.functional.pad(t, (0, 0, 0, gap)) if gap > 0 else t
 
@@ -366,34 +459,48 @@ def train(args: argparse.Namespace) -> None:
     print(f"Device: {device}")
 
     # --- data ---
-    if args.pdb_ids:
+    if args.dataset_cache:
+        train_ds, val_ds = build_cached_dataset(
+            cache_dir=args.dataset_cache,
+            n_pseudo=args.n_pseudo,
+            n_workers=args.num_workers,
+            seed=args.seed,
+        )
+    elif args.pdb_ids:
         pdb_list = [p.strip().upper() for p in args.pdb_ids.split(",")]
         print(f"Loading real PDB structures: {pdb_list}")
         dataset = build_real_msa_dataset(
             pdb_list, n_pseudo=args.n_pseudo, seed=args.seed,
         )
+        n_val   = max(1, int(len(dataset) * 0.2))
+        n_train = len(dataset) - n_val
+        train_ds, val_ds = random_split(
+            dataset, [n_train, n_val],
+            generator=torch.Generator().manual_seed(args.seed),
+        )
+        print(f"  Train: {len(train_ds):,} | Val: {len(val_ds):,}")
     else:
         print(f"Building synthetic dataset ({args.n_samples} sequences)...")
         dataset = build_synthetic_msa_dataset(
             n=args.n_samples, n_pseudo=args.n_pseudo, seed=args.seed,
         )
-    print(dataset)
+        n_val   = max(1, int(len(dataset) * 0.2))
+        n_train = len(dataset) - n_val
+        train_ds, val_ds = random_split(
+            dataset, [n_train, n_val],
+            generator=torch.Generator().manual_seed(args.seed),
+        )
+        print(f"  Train: {len(train_ds):,} | Val: {len(val_ds):,}")
 
-    n_val   = max(1, int(len(dataset) * 0.2))
-    n_train = len(dataset) - n_val
-    train_ds, val_ds = random_split(
-        dataset, [n_train, n_val],
-        generator=torch.Generator().manual_seed(args.seed),
+    loader_kw = dict(
+        batch_size=args.batch_size,
+        collate_fn=collate_msa_structure,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory and device.type == "cuda",
+        persistent_workers=args.num_workers > 0,
     )
-    train_loader = DataLoader(
-        train_ds, batch_size=args.batch_size,
-        shuffle=True, collate_fn=collate_msa_structure,
-    )
-    val_loader = DataLoader(
-        val_ds, batch_size=args.batch_size,
-        shuffle=False, collate_fn=collate_msa_structure,
-    )
-    print(f"  Train: {len(train_ds):,} | Val: {len(val_ds):,}")
+    train_loader = DataLoader(train_ds, shuffle=True, **loader_kw)
+    val_loader   = DataLoader(val_ds,   shuffle=False, **loader_kw)
 
     # --- model ---
     model = build_msa_structure_model(
@@ -406,38 +513,100 @@ def train(args: argparse.Namespace) -> None:
     print(f"Model: {model}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+
+    steps_per_epoch = max(1, len(train_loader))
+    total_steps = steps_per_epoch * args.epochs
+    scheduler = make_lr_scheduler(optimizer, args.warmup_steps, total_steps)
+
+    # --- TensorBoard ---
+    writer = _SummaryWriter(args.log_dir) if args.log_dir else _SummaryWriter()
+    if args.log_dir:
+        if _TB_AVAILABLE:
+            print(f"TensorBoard log dir: {args.log_dir}")
+        else:
+            print(
+                "WARNING: tensorboard not installed; --log-dir has no effect.\n"
+                "         Install with: pip install tensorboard"
+            )
 
     # --- loop ---
     best_tm = 0.0
     hdr = (
-        f"\n{'Epoch':>5}  {'FAPE':>7}  {'RMSD':>7}  "
-        f"{'TM-score':>8}  {'GDT-TS':>7}  {'Time':>6}"
+        f"\n{'Epoch':>5}  {'TrainFAPE':>9}  {'ValFAPE':>7}  {'RMSD':>7}  "
+        f"{'TM-score':>8}  {'GDT-TS':>7}  {'LR':>8}  {'Time':>6}"
     )
     print(hdr)
-    print("-" * 54)
+    print("-" * 74)
 
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
-        run_epoch(model, train_loader, optimizer, device, args.d_clamp)
-        val_fape, rmsd, tm, gdt = run_epoch(model, val_loader, None, device, args.d_clamp)
-        scheduler.step()
 
-        elapsed = time.time() - t0
-        marker  = " *" if tm > best_tm else ""
-        best_tm = max(best_tm, tm)
-        print(
-            f"{epoch:>5}  {val_fape:>7.4f}  {rmsd:>7.2f}  "
-            f"{tm:>8.4f}  {gdt:>7.3f}  {elapsed:>5.1f}s{marker}"
+        train_fape, _, _, _ = run_epoch(
+            model, train_loader, optimizer, device, args.d_clamp, scheduler,
+        )
+        val_fape, rmsd, tm, gdt = run_epoch(
+            model, val_loader, None, device, args.d_clamp,
         )
 
+        elapsed = time.time() - t0
+        current_lr = scheduler.get_last_lr()[0]
+        marker  = " *" if tm > best_tm else ""
+        best_tm = max(best_tm, tm)
+
+        print(
+            f"{epoch:>5}  {train_fape:>9.4f}  {val_fape:>7.4f}  {rmsd:>7.2f}  "
+            f"{tm:>8.4f}  {gdt:>7.3f}  {current_lr:>8.2e}  {elapsed:>5.1f}s{marker}"
+        )
+
+        # TensorBoard
+        writer.add_scalar("loss/train_fape", train_fape, epoch)
+        writer.add_scalar("loss/val_fape",   val_fape,   epoch)
+        writer.add_scalar("metrics/val_rmsd", rmsd,      epoch)
+        writer.add_scalar("metrics/val_tm",   tm,        epoch)
+        writer.add_scalar("metrics/val_gdt",  gdt,       epoch)
+        writer.add_scalar("lr",               current_lr, epoch)
+
+        # Periodic checkpoint
+        if args.ckpt_every and (epoch % args.ckpt_every == 0):
+            ckpt_path = Path(args.save or "checkpoint.pt")
+            _save_checkpoint(
+                ckpt_path.with_stem(f"{ckpt_path.stem}_epoch{epoch:04d}"),
+                model, optimizer, scheduler, epoch, best_tm, args,
+            )
+
     print(f"\nBest val TM-score: {best_tm:.4f}")
+    writer.close()
 
     if args.save:
-        save_path = Path(args.save)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({"model_state": model.state_dict(), "args": vars(args)}, save_path)
-        print(f"Checkpoint saved -> {save_path}")
+        _save_checkpoint(
+            Path(args.save), model, optimizer, scheduler,
+            args.epochs, best_tm, args,
+        )
+        print(f"Final checkpoint -> {args.save}")
+
+
+def _save_checkpoint(
+    path: Path,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LambdaLR,
+    epoch: int,
+    best_tm: float,
+    args: argparse.Namespace,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "model_state":     model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "scheduler_state": scheduler.state_dict(),
+            "epoch":           epoch,
+            "best_tm":         best_tm,
+            "args":            vars(args),
+        },
+        path,
+    )
+    print(f"  Checkpoint -> {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -452,11 +621,15 @@ def parse_args() -> argparse.Namespace:
 
     data = p.add_argument_group("data")
     data.add_argument(
+        "--dataset-cache", type=str, default=None,
+        help="Path to structure disk cache. Uses LargeStructureDataset (~300 curated PDBs).",
+    )
+    data.add_argument(
         "--pdb-ids", type=str, default=None,
-        help="Comma-separated PDB IDs. Omit for synthetic data.",
+        help="Comma-separated PDB IDs (small set). Omit for synthetic data.",
     )
     data.add_argument("--n-samples", type=int, default=64,
-                      help="Number of synthetic sequences (ignored when --pdb-ids set).")
+                      help="Number of synthetic sequences (synthetic mode only).")
     data.add_argument("--n-pseudo",  type=int, default=8,
                       help="Number of pseudo-MSA homologues per query.")
     data.add_argument("--seed",      type=int, default=42)
@@ -472,13 +645,23 @@ def parse_args() -> argparse.Namespace:
                      help="Disable triangle multiplicative updates.")
 
     train_g = p.add_argument_group("training")
-    train_g.add_argument("--epochs",     type=int,   default=10)
-    train_g.add_argument("--batch-size", type=int,   default=4)
-    train_g.add_argument("--lr",         type=float, default=1e-3)
-    train_g.add_argument("--d-clamp",    type=float, default=10.0,
+    train_g.add_argument("--epochs",       type=int,   default=10)
+    train_g.add_argument("--batch-size",   type=int,   default=4)
+    train_g.add_argument("--lr",           type=float, default=1e-3)
+    train_g.add_argument("--d-clamp",      type=float, default=10.0,
                          help="FAPE clamping distance (Angstroms).")
-    train_g.add_argument("--save",       type=str,   default=None,
-                         help="Path to save best checkpoint (.pt).")
+    train_g.add_argument("--warmup-steps", type=int,   default=0,
+                         help="Number of linear LR warmup steps (optimizer steps).")
+    train_g.add_argument("--num-workers",  type=int,   default=0,
+                         help="DataLoader worker processes.")
+    train_g.add_argument("--pin-memory",   action="store_true",
+                         help="Pin DataLoader memory (CUDA only).")
+    train_g.add_argument("--log-dir",      type=str,   default=None,
+                         help="TensorBoard log directory.")
+    train_g.add_argument("--ckpt-every",   type=int,   default=0,
+                         help="Save a checkpoint every N epochs (0 = disabled).")
+    train_g.add_argument("--save",         type=str,   default=None,
+                         help="Path to save final checkpoint (.pt).")
 
     return p.parse_args()
 
