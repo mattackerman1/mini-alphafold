@@ -30,15 +30,21 @@ Usage
       --n-blocks 4 --c-m 64 --c-z 32 \\
       --epochs 30 --lr 5e-4 --n-pseudo 16 --save ckpt_phase3.pt
 
-  # Large-scale training with 300 PDB structures, TensorBoard, warmup LR
+  # Quick test with 20 cached structures (fast, validates the pipeline)
   python scripts/train_end_to_end.py \\
       --dataset-cache ~/.cache/mini_alphafold/structures \\
-      --n-blocks 4 --c-m 128 --c-z 64 \\
+      --n-structures 20 --max-len 100 \\
+      --epochs 5 --batch-size 2
+
+  # Full-scale training with 300 PDB structures, TensorBoard, warmup LR
+  python scripts/train_end_to_end.py \\
+      --dataset-cache ~/.cache/mini_alphafold/structures \\
+      --n-structures 300 --n-blocks 4 --c-m 128 --c-z 64 \\
       --epochs 100 --batch-size 8 --lr 3e-4 \\
       --num-workers 4 --pin-memory \\
       --warmup-steps 500 \\
       --log-dir runs/phase3_large \\
-      --ckpt-every 5 --save ckpt_phase3_large.pt
+      --ckpt-every 10 --save ckpt_phase3_large.pt
 
   # Disable triangle updates (faster, ablation)
   python scripts/train_end_to_end.py --no-triangle
@@ -270,8 +276,9 @@ def build_cached_dataset(
     min_len:      int   = 30,
     max_len:      int   = 300,
     val_fraction: float = 0.1,
+    n_structures: int   = 300,
 ):
-    """Build train/val datasets from the curated ~300-structure cache.
+    """Build train/val datasets from the curated structure cache.
 
     Downloads missing structures in parallel, caches as gzip pickles, then
     returns (train_ds, val_ds) as LargeStructureDataset objects.
@@ -284,6 +291,7 @@ def build_cached_dataset(
         seed:         RNG seed for train/val split.
         min_len / max_len: Length filter applied during loading.
         val_fraction: Fraction of data reserved for validation.
+        n_structures: Cap on total structures drawn from CURATED_PDB_IDS.
 
     Returns:
         (train_ds, val_ds) — LargeStructureDataset instances.
@@ -300,6 +308,7 @@ def build_cached_dataset(
         min_len=min_len,
         max_len=max_len,
         val_fraction=val_fraction,
+        n_structures=n_structures,
     )
     print(f"  Train: {len(train_ds):,} | Val: {len(val_ds):,}")
     return train_ds, val_ds
@@ -465,6 +474,9 @@ def train(args: argparse.Namespace) -> None:
             n_pseudo=args.n_pseudo,
             n_workers=args.num_workers,
             seed=args.seed,
+            n_structures=args.n_structures,
+            min_len=args.min_len,
+            max_len=args.max_len,
         )
     elif args.pdb_ids:
         pdb_list = [p.strip().upper() for p in args.pdb_ids.split(",")]
@@ -550,8 +562,9 @@ def train(args: argparse.Namespace) -> None:
 
         elapsed = time.time() - t0
         current_lr = scheduler.get_last_lr()[0]
-        marker  = " *" if tm > best_tm else ""
-        best_tm = max(best_tm, tm)
+        improved = tm > best_tm
+        marker   = " *" if improved else ""
+        best_tm  = max(best_tm, tm)
 
         print(
             f"{epoch:>5}  {train_fape:>9.4f}  {val_fape:>7.4f}  {rmsd:>7.2f}  "
@@ -559,30 +572,33 @@ def train(args: argparse.Namespace) -> None:
         )
 
         # TensorBoard
-        writer.add_scalar("loss/train_fape", train_fape, epoch)
-        writer.add_scalar("loss/val_fape",   val_fape,   epoch)
-        writer.add_scalar("metrics/val_rmsd", rmsd,      epoch)
-        writer.add_scalar("metrics/val_tm",   tm,        epoch)
-        writer.add_scalar("metrics/val_gdt",  gdt,       epoch)
+        writer.add_scalar("loss/train_fape",  train_fape, epoch)
+        writer.add_scalar("loss/val_fape",    val_fape,   epoch)
+        writer.add_scalar("metrics/val_rmsd", rmsd,       epoch)
+        writer.add_scalar("metrics/val_tm",   tm,         epoch)
+        writer.add_scalar("metrics/val_gdt",  gdt,        epoch)
         writer.add_scalar("lr",               current_lr, epoch)
+
+        # Best-model checkpoint (overwrites on TM improvement)
+        if improved and args.save:
+            best_path = Path(args.save)
+            _save_checkpoint(best_path, model, optimizer, scheduler, epoch, best_tm, args)
+            print(f"  Best model saved (TM={best_tm:.4f}) -> {best_path}")
 
         # Periodic checkpoint
         if args.ckpt_every and (epoch % args.ckpt_every == 0):
-            ckpt_path = Path(args.save or "checkpoint.pt")
-            _save_checkpoint(
-                ckpt_path.with_stem(f"{ckpt_path.stem}_epoch{epoch:04d}"),
-                model, optimizer, scheduler, epoch, best_tm, args,
-            )
+            ckpt_base = Path(args.save or "checkpoint.pt")
+            periodic_path = ckpt_base.with_stem(f"{ckpt_base.stem}_epoch{epoch:04d}")
+            _save_checkpoint(periodic_path, model, optimizer, scheduler, epoch, best_tm, args)
 
     print(f"\nBest val TM-score: {best_tm:.4f}")
     writer.close()
 
+    # Always write the final model state as a separate file
     if args.save:
-        _save_checkpoint(
-            Path(args.save), model, optimizer, scheduler,
-            args.epochs, best_tm, args,
-        )
-        print(f"Final checkpoint -> {args.save}")
+        last_path = Path(args.save).with_stem(Path(args.save).stem + "_last")
+        _save_checkpoint(last_path, model, optimizer, scheduler, args.epochs, best_tm, args)
+        print(f"Last checkpoint  -> {last_path}")
 
 
 def _save_checkpoint(
@@ -628,11 +644,17 @@ def parse_args() -> argparse.Namespace:
         "--pdb-ids", type=str, default=None,
         help="Comma-separated PDB IDs (small set). Omit for synthetic data.",
     )
-    data.add_argument("--n-samples", type=int, default=64,
+    data.add_argument("--n-samples",    type=int, default=64,
                       help="Number of synthetic sequences (synthetic mode only).")
-    data.add_argument("--n-pseudo",  type=int, default=8,
+    data.add_argument("--n-structures", type=int, default=300,
+                      help="Max structures drawn from CURATED_PDB_IDS (cached mode).")
+    data.add_argument("--min-len",      type=int, default=30,
+                      help="Skip structures shorter than this (cached mode).")
+    data.add_argument("--max-len",      type=int, default=300,
+                      help="Skip structures longer than this (cached mode).")
+    data.add_argument("--n-pseudo",     type=int, default=8,
                       help="Number of pseudo-MSA homologues per query.")
-    data.add_argument("--seed",      type=int, default=42)
+    data.add_argument("--seed",         type=int, default=42)
 
     evo = p.add_argument_group("evoformer")
     evo.add_argument("--n-blocks",    type=int,   default=2,

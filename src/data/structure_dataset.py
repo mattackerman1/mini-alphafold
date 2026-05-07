@@ -139,8 +139,8 @@ CURATED_PDB_IDS: list[str] = [
     "1D3Z",
     # --- designed proteins ---
     "1QYS", "2WXC",
-    # --- cytokines (IL-8, IL-4) ---
-    "1IL8",
+    # --- cytokines ---
+    "1IL8", "2ILK",
     # --- insulin ---
     "1INS",
     # --- phospholipase A2 ---
@@ -171,8 +171,6 @@ CURATED_PDB_IDS: list[str] = [
     "1BTN",
     # --- pleckstrin homology ---
     "1FAO",
-    # --- RAS / Rho GTPase-like ---
-    "5P21",
     # --- Sm-fold ---
     "1I5L",
     # --- SAM domain ---
@@ -183,8 +181,6 @@ CURATED_PDB_IDS: list[str] = [
     "1KNA",
     # --- PWWP domain ---
     "2CO0",
-    # --- HECT domains ---
-    "1C4Z",
     # --- UBA domains ---
     "1WHS",
     # --- beta-grasp fold variants ---
@@ -192,9 +188,7 @@ CURATED_PDB_IDS: list[str] = [
     # --- Greek key immunoglobulin ---
     "1TIT",
     # --- fibronectin-III like ---
-    "1FNF",
-    # --- titin Ig domain ---
-    "1TIT",
+    "1FNF", "1FNA",
     # --- cadherin EC domain ---
     "1EDH",
     # --- lectin (concanavalin) ---
@@ -212,7 +206,7 @@ CURATED_PDB_IDS: list[str] = [
     # --- VEGF ---
     "1VGH",
     # --- coiled coil ---
-    "1HRK", "2ZTA",
+    "1HRK",
     # --- 3-helix bundle ---
     "1LQ7",
     # --- 4-helix bundle ---
@@ -227,8 +221,6 @@ CURATED_PDB_IDS: list[str] = [
     "1NA0",
     # --- leucine-rich repeats ---
     "1B2L",
-    # --- PPII helix ---
-    "1N1J",
     # --- beta-solenoid ---
     "1GLG",
     # --- OspA / beta-zipper ---
@@ -253,19 +245,45 @@ CURATED_PDB_IDS: list[str] = [
     "1A3S",
     # --- PCNA / sliding clamp ---
     "1VYJ",
-    # --- RAD ---
-    "1JYD",
     # --- NMR structure examples ---
     "1ERV", "2KHO",
     # --- miscellaneous well-determined small proteins ---
     "1HMK", "1NAT", "1C3W", "1OHZ", "1YPF",
-    "1G2B", "1L9L", "2ABD", "1A1X", "1BBA",
+    "1G2B", "1L9L", "1A1X", "1BBA",
     "1PCA", "1AA0", "1GDJ", "1AKO", "1MFG",
     "1TUP", "1DKT", "1XNB", "1LDD", "2CDX",
     "1POH", "1TGX", "1A48", "1PYS", "1A73",
-    "2ACE", "1HMT", "1OVA", "1BZ4", "1FDS",
+    "2ACE", "1HMT", "1BZ4", "1FDS",
     "1GVP", "1GYZ", "2GBP", "1LVE", "1BKJ",
     "1QJO", "1GAL", "1VCA", "1W4O", "1Z2K",
+    # --- additional all-alpha proteins ---
+    "1MBA", "1LBD", "1HRC", "1BBH", "2HHB",
+    "1BPI", "1HEW", "2RN2", "1RTB",
+    # --- additional all-beta proteins ---
+    "1PBA", "1SLO", "1TSR", "2SIL", "1CBH",
+    "1NFN", "1QAU", "3MEF", "1SBP", "1JL1",
+    # --- additional alpha/beta proteins ---
+    "1FKB", "2SNI", "1SBT", "1OPC", "1DBF",
+    "1AMQ", "3SSI", "1HVV", "2GCH", "1NHY",
+    "1BAH", "1BOY", "1CTF", "1SHF", "2RKS",
+    # --- additional beta-barrel / OMP-like ---
+    "1QJP", "1PHO", "2POR",
+    # --- additional coiled-coils / helical ---
+    "1KD8", "1DFJ", "1IC6",
+    # --- additional small mixed ---
+    "1WIT", "1FEP", "2LHB", "1BGF", "1CEW",
+    "1TUL", "1QPX", "3LZT", "1ATN", "1CYO",
+    "1A6N", "1BEB", "2AIT", "1SLT", "1ONC",
+    "1CEI", "1HCN", "2FHA", "1KTH", "2PDD",
+    "3BCI", "1R69", "2FON", "1WBA", "1DV0",
+    "2HQI", "1HDN", "3ICB", "4ICB", "1AIL",
+    "1E8L", "2A3D", "1BDD", "1K9Q", "1POU",
+    "2CHF", "1ELV", "1HEL", "1JBC", "1ROP",
+    "1YRB", "2BH8", "1VQB", "1SP2", "2HP8",
+    "1NXB", "1WFB", "1AHO", "2CI2", "1BRS",
+    "1PHP", "1QOP", "1YOW", "3C2C", "1JO8",
+    "1JAM", "2PCB", "1WVN", "2UZI", "1BKS",
+    "1HME", "1H97", "2K7J", "1NI4", "2A5E",
 ]
 
 # Deduplicate while preserving order
