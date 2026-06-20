@@ -102,8 +102,10 @@ except ImportError:
 class MSAStructureDataset(Dataset):
     """Dataset returning (tokens, msa_features, backbone_coords) per sample.
 
-    Wraps MSADataset to add structure coordinates.  Pseudo-MSAs are generated
-    automatically from the query sequence using random mutation.
+    Supports both pseudo-MSAs (default) and real pre-cached MSAs from the
+    ColabFold API (via --msa-cache).  When a cache directory is provided,
+    each sequence's real MSA is loaded from disk; sequences without a cache
+    entry fall back to pseudo-MSA automatically.
 
     Args:
         sequences:     List of amino-acid strings.
@@ -111,6 +113,10 @@ class MSAStructureDataset(Dataset):
         n_pseudo:      Number of pseudo-MSA homologues per query (default 8).
         mutation_rate: Per-residue substitution rate for pseudo-MSA (default 0.15).
         seed:          Optional RNG seed for reproducible pseudo-MSAs.
+        msa_cache_dir: Optional path to a pre-populated MSA cache directory.
+                       When provided, real MSAs are loaded from cache; missing
+                       entries fall back to pseudo-MSA silently.
+        max_msa_depth: Maximum number of MSA sequences to use per sample.
     """
 
     def __init__(
@@ -120,10 +126,35 @@ class MSAStructureDataset(Dataset):
         n_pseudo:      int   = 8,
         mutation_rate: float = 0.15,
         seed:          Optional[int] = None,
+        msa_cache_dir: Optional[str] = None,
+        max_msa_depth: int = 512,
     ) -> None:
         assert len(sequences) == len(coords), "sequences and coords must have equal length"
+
+        # Resolve MSA sequences: real from cache, or pseudo-generated
+        if msa_cache_dir is not None:
+            from src.data.msa_fetcher import load_cached_msa
+            msa_seqs_list = []
+            n_real = 0
+            for seq in sequences:
+                msa = load_cached_msa(
+                    seq,
+                    cache_dir=msa_cache_dir,
+                    max_msa_depth=max_msa_depth,
+                    fallback_pseudo=True,
+                    n_pseudo=n_pseudo,
+                )
+                msa_seqs_list.append(msa)
+                if not all(s == seq or "-" in s for s in msa[1:]):
+                    n_real += 1
+            print(f"  MSA source: {n_real}/{len(sequences)} from real cache, "
+                  f"{len(sequences)-n_real} pseudo-MSA fallback")
+        else:
+            msa_seqs_list = None
+
         self._msa_ds = MSADataset(
             sequences,
+            msa_sequences=msa_seqs_list,
             n_pseudo=n_pseudo,
             mutation_rate=mutation_rate,
             seed=seed,
@@ -227,12 +258,25 @@ def build_synthetic_msa_dataset(
 # ---------------------------------------------------------------------------
 
 def build_real_msa_dataset(
-    pdb_ids:      list[str],
-    n_pseudo:     int   = 8,
+    pdb_ids:       list[str],
+    n_pseudo:      int   = 8,
     mutation_rate: float = 0.15,
-    seed:         int   = 0,
+    seed:          int   = 0,
+    msa_cache_dir: Optional[str] = None,
+    max_msa_depth: int   = 512,
 ) -> MSAStructureDataset:
-    """Download PDB files from RCSB and build MSAStructureDataset."""
+    """Download PDB files from RCSB and build MSAStructureDataset.
+
+    Args:
+        pdb_ids:       List of 4-character PDB IDs.
+        n_pseudo:      Pseudo-MSA depth for sequences without a cache entry.
+        mutation_rate: Mutation rate for pseudo-MSA generation.
+        seed:          RNG seed.
+        msa_cache_dir: Optional path to a pre-populated MSA cache directory
+                       (created by scripts/prefetch_msas.py). When provided,
+                       real MSAs are used; missing entries fall back to pseudo.
+        max_msa_depth: Maximum MSA sequences per sample.
+    """
     try:
         from src.data.pdb_parser import parse_structure_file
     except ImportError as exc:
@@ -261,6 +305,7 @@ def build_real_msa_dataset(
     return MSAStructureDataset(
         sequences, coords_list,
         n_pseudo=n_pseudo, mutation_rate=mutation_rate, seed=seed,
+        msa_cache_dir=msa_cache_dir, max_msa_depth=max_msa_depth,
     )
 
 
@@ -482,8 +527,12 @@ def train(args: argparse.Namespace) -> None:
     elif args.pdb_ids:
         pdb_list = [p.strip().upper() for p in args.pdb_ids.split(",")]
         print(f"Loading real PDB structures: {pdb_list}")
+        if args.msa_cache:
+            print(f"Using real MSA cache: {args.msa_cache}")
         dataset = build_real_msa_dataset(
             pdb_list, n_pseudo=args.n_pseudo, seed=args.seed,
+            msa_cache_dir=args.msa_cache,
+            max_msa_depth=args.max_msa_depth,
         )
         n_val   = max(1, int(len(dataset) * 0.2))
         n_train = len(dataset) - n_val
@@ -675,6 +724,15 @@ def parse_args() -> argparse.Namespace:
                       help="Skip structures longer than this (cached mode).")
     data.add_argument("--n-pseudo",     type=int, default=8,
                       help="Number of pseudo-MSA homologues per query.")
+    data.add_argument("--msa-cache",    type=str, default=None,
+                      help=(
+                          "Path to a pre-populated MSA cache directory created by "
+                          "scripts/prefetch_msas.py. When provided, real MSAs are "
+                          "loaded from cache instead of pseudo-MSAs. Sequences "
+                          "without a cache entry fall back to pseudo-MSA silently."
+                      ))
+    data.add_argument("--max-msa-depth", type=int, default=512,
+                      help="Maximum MSA depth (number of homologs) per sample.")
     data.add_argument("--seed",         type=int, default=42)
 
     evo = p.add_argument_group("evoformer")
