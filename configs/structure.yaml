@@ -1,0 +1,13 @@
+data:
+  pdb_ids: null
+  n_samples: 128
+
+model:
+  model: bilstm
+
+training:
+  epochs: 10
+  batch_size: 4
+  lr: 1.0e-3
+  d_clamp: 10.0
+  save: null

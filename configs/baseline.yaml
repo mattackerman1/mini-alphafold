@@ -1,0 +1,14 @@
+data:
+  real_data: false
+  ss_type: ss3
+  max_samples: null
+  n_samples: 512
+
+model:
+  model: bilstm
+
+training:
+  epochs: 10
+  batch_size: 16
+  lr: 1.0e-3
+  save: null

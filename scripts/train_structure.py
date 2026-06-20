@@ -41,6 +41,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+import yaml
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -413,11 +414,32 @@ def train(args: argparse.Namespace) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
+def _load_config(path: str) -> dict:
+    """Load a YAML config and return a flat dict aligned with argparse dest names."""
+    with open(path) as f:
+        cfg = yaml.safe_load(f) or {}
+    flat: dict = {}
+    for section in cfg.values():
+        if isinstance(section, dict):
+            for k, v in section.items():
+                flat[k.replace("-", "_")] = v
+    return flat
+
+
 def parse_args() -> argparse.Namespace:
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=str, default=None)
+    pre_ns, _ = pre.parse_known_args()
+
     p = argparse.ArgumentParser(
         description="Train coarse 3D structure predictor (Phase 2)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    p.add_argument(
+        "--config", type=str, default=None,
+        help="Path to YAML experiment config (CLI args override config values).",
+    )
+
     data = p.add_argument_group("data")
     data.add_argument(
         "--pdb-ids", type=str, default=None,
@@ -435,6 +457,9 @@ def parse_args() -> argparse.Namespace:
     train_g.add_argument("--d-clamp",    type=float, default=10.0,
                          help="FAPE clamping distance in Angstroms")
     train_g.add_argument("--save",       type=str,   default=None)
+
+    if pre_ns.config:
+        p.set_defaults(**_load_config(pre_ns.config))
 
     return p.parse_args()
 
