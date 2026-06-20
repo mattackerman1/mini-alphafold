@@ -1,3 +1,15 @@
+# mini-alphafold: project-specific ignores
+*.pt
+*.pth
+*.ckpt
+*.pdb
+*.cif
+*.mmcif
+runs/
+wandb/
+mlruns/
+data/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
