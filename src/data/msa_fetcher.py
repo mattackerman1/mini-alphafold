@@ -66,7 +66,7 @@ def _parse_a3m(a3m_text: str) -> list[str]:
     Returns:
         List of aligned strings, query first. Empty sequences are skipped.
     """
-    sequences: list[str] = []
+    raw: list[str] = []
     current: list[str] = []
 
     for line in a3m_text.splitlines():
@@ -76,20 +76,32 @@ def _parse_a3m(a3m_text: str) -> list[str]:
         if line.startswith(">"):
             if current:
                 seq = "".join(current)
-                # Remove lowercase insertion characters
                 seq = "".join(ch for ch in seq if not ch.islower())
                 if seq:
-                    sequences.append(seq)
+                    raw.append(seq)
             current = []
         else:
             current.append(line)
 
-    # Flush last entry
     if current:
         seq = "".join(current)
         seq = "".join(ch for ch in seq if not ch.islower())
         if seq:
-            sequences.append(seq)
+            raw.append(seq)
+
+    if not raw:
+        return raw
+
+    # Discard homologs whose aligned length doesn't match the query.
+    # This handles malformed ColabFold entries where uppercase+gap column
+    # counts differ from the query row.
+    query_len = len(raw[0])
+    sequences = [s for s in raw if len(s) == query_len]
+    if len(sequences) < len(raw):
+        logger.warning(
+            "_parse_a3m: dropped %d/%d sequences with length != %d",
+            len(raw) - len(sequences), len(raw), query_len,
+        )
 
     return sequences
 
