@@ -1,0 +1,27 @@
+data:
+  dataset_cache: null
+  pdb_ids: null
+  n_samples: 64
+  n_structures: 300
+  min_len: 30
+  max_len: 300
+  n_pseudo: 8
+  seed: 42
+
+evoformer:
+  n_blocks: 2
+  c_m: 64
+  c_z: 32
+  no_triangle: false
+
+training:
+  epochs: 10
+  batch_size: 4
+  lr: 1.0e-3
+  d_clamp: 10.0
+  warmup_steps: 0
+  num_workers: 0
+  pin_memory: false
+  log_dir: null
+  ckpt_every: 0
+  save: null

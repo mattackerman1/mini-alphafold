@@ -33,6 +33,8 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 import torch
 import torch.nn as nn
 from torch import Tensor
@@ -232,10 +234,36 @@ def train(args: argparse.Namespace) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
+def _load_config(path: str) -> dict:
+    """Load a YAML config file and return a flat dict of key -> value.
+
+    Nested sections (data, model, training) are flattened by replacing
+    hyphens with underscores so they align with argparse dest names.
+    """
+    with open(path) as f:
+        cfg = yaml.safe_load(f) or {}
+    flat: dict = {}
+    for section in cfg.values():
+        if isinstance(section, dict):
+            for k, v in section.items():
+                flat[k.replace("-", "_")] = v
+    return flat
+
+
 def parse_args() -> argparse.Namespace:
+    # Pre-scan for --config before building the full parser so we can load
+    # YAML defaults before argparse sets its own defaults.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=str, default=None)
+    pre_ns, _ = pre.parse_known_args()
+
     p = argparse.ArgumentParser(
         description="Train baseline secondary structure model",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument(
+        "--config", type=str, default=None,
+        help="Path to YAML experiment config (CLI args override config values).",
     )
 
     # Data
@@ -273,6 +301,10 @@ def parse_args() -> argparse.Namespace:
         "--save", type=str, default=None,
         help="Path to save checkpoint, e.g. checkpoints/baseline.pt",
     )
+
+    # Apply YAML defaults (CLI args will still override these)
+    if pre_ns.config:
+        p.set_defaults(**_load_config(pre_ns.config))
 
     return p.parse_args()
 

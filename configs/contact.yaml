@@ -1,0 +1,16 @@
+data:
+  pdb_ids: null
+  n_samples: 256
+  threshold: 8.0
+  sep_min: 6
+
+model:
+  model: bilstm
+  pair_dim: 64
+  loss: bce
+
+training:
+  epochs: 10
+  batch_size: 4
+  lr: 1.0e-3
+  save: null
