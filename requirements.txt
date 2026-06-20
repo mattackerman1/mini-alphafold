@@ -4,8 +4,6 @@ torchvision>=0.17.0
 
 # Data & biology
 biopython>=1.83
-biotite>=0.40.0
-prody>=2.4.1
 numpy>=1.26.0
 pandas>=2.2.0
 scikit-learn>=1.4.0
