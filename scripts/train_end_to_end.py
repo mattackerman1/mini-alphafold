@@ -191,15 +191,16 @@ def collate_msa_structure(
     lengths = torch.tensor([t.size(0) for t in tokens_list], dtype=torch.long)
     L_max   = int(lengths.max().item())
     B       = len(tokens_list)
-    N_seq   = msa_list[0].shape[0]
+    N_seq    = max(m.shape[0] for m in msa_list)
     feat_dim = msa_list[0].shape[2]
 
     tokens = pad_sequence(tokens_list, batch_first=True, padding_value=PAD_IDX)
 
     msa = torch.zeros(B, N_seq, L_max, feat_dim)
     for b, m in enumerate(msa_list):
+        n_b = m.shape[0]
         L_b = m.shape[1]
-        msa[b, :, :L_b, :] = m
+        msa[b, :n_b, :L_b, :] = m
 
     coords = torch.zeros(B, L_max, 4, 3, dtype=torch.float32)
     for b, c in enumerate(coords_list):
