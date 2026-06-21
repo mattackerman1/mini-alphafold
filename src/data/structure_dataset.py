@@ -464,17 +464,21 @@ class LargeStructureDataset(Dataset):
         seed:          int   = 42,
         min_len:       int   = 30,
         max_len:       int   = 300,
+        msa_cache_dir: Optional[str | Path] = None,
+        max_msa_depth: int   = 512,
     ) -> None:
         from src.data.protein_dataset import tokenize
         from src.data.msa_encoder import MSAEncoder, generate_pseudo_msa
 
-        self._cache       = cache
-        self._n_pseudo    = n_pseudo
-        self._mut_rate    = mutation_rate
-        self._seed        = seed
-        self._tokenize    = tokenize
-        self._msa_encoder = MSAEncoder()
-        self._gen_pseudo  = generate_pseudo_msa
+        self._cache         = cache
+        self._n_pseudo      = n_pseudo
+        self._mut_rate      = mutation_rate
+        self._seed          = seed
+        self._tokenize      = tokenize
+        self._msa_encoder   = MSAEncoder()
+        self._gen_pseudo    = generate_pseudo_msa
+        self._msa_cache_dir = Path(msa_cache_dir) if msa_cache_dir is not None else None
+        self._max_msa_depth = max_msa_depth
 
         # Eagerly load all structures so __len__ is reliable and we can filter
         self._data: list[tuple[str, object]] = []   # (pdb_id, StructureData)
@@ -501,12 +505,22 @@ class LargeStructureDataset(Dataset):
 
         tokens = self._tokenize(sd.sequence)   # (L,) long
 
-        msa_seqs = self._gen_pseudo(
-            sd.sequence,
-            n_sequences=self._n_pseudo,
-            mutation_rate=self._mut_rate,
-            seed=self._seed + idx,
-        )
+        if self._msa_cache_dir is not None:
+            from src.data.msa_fetcher import load_cached_msa
+            msa_seqs = load_cached_msa(
+                sd.sequence,
+                cache_dir=self._msa_cache_dir,
+                max_msa_depth=self._max_msa_depth,
+                fallback_pseudo=True,
+                n_pseudo=self._n_pseudo,
+            )
+        else:
+            msa_seqs = self._gen_pseudo(
+                sd.sequence,
+                n_sequences=self._n_pseudo,
+                mutation_rate=self._mut_rate,
+                seed=self._seed + idx,
+            )
         msa_feat = self._msa_encoder.encode(msa_seqs)   # MSAFeatures
         msa      = msa_feat.features                     # (N_seq, L, 45)
 
@@ -516,10 +530,12 @@ class LargeStructureDataset(Dataset):
         lengths = [len(sd.sequence) for _, sd in self._data]
         if lengths:
             avg_L = sum(lengths) / len(lengths)
+            msa_cache = str(self._msa_cache_dir) if self._msa_cache_dir is not None else None
             return (
                 f"LargeStructureDataset(n={len(self)}, "
                 f"avg_L={avg_L:.0f}, "
-                f"n_pseudo={self._n_pseudo})"
+                f"n_pseudo={self._n_pseudo}, "
+                f"msa_cache={msa_cache!r})"
             )
         return f"LargeStructureDataset(n=0)"
 
@@ -539,6 +555,8 @@ def build_large_dataset(
     min_len:       int   = 30,
     max_len:       int   = 300,
     seed:          int   = 42,
+    msa_cache_dir: Optional[str | Path] = None,
+    max_msa_depth: int   = 512,
 ) -> tuple["LargeStructureDataset", "LargeStructureDataset"]:
     """Download, cache, and split structures into train / val datasets.
 
@@ -582,11 +600,17 @@ def build_large_dataset(
         seed=seed,
         min_len=min_len,
         max_len=max_len,
+        msa_cache_dir=msa_cache_dir,
+        max_msa_depth=max_msa_depth,
     )
     train_ds = LargeStructureDataset(train_ids, **ds_kwargs)
     val_ds   = LargeStructureDataset(val_ids,   **ds_kwargs)
 
     print(f"Dataset split — train: {len(train_ds)}, val: {len(val_ds)}")
+    if msa_cache_dir is not None:
+        print(f"MSA source: real (cache: {msa_cache_dir})")
+    else:
+        print("MSA source: pseudo-MSA (no cache provided)")
     return train_ds, val_ds
 
 

@@ -323,6 +323,8 @@ def build_cached_dataset(
     max_len:      int   = 300,
     val_fraction: float = 0.1,
     n_structures: int   = 300,
+    msa_cache_dir: Optional[str] = None,
+    max_msa_depth: int   = 512,
 ):
     """Build train/val datasets from the curated structure cache.
 
@@ -355,6 +357,8 @@ def build_cached_dataset(
         max_len=max_len,
         val_fraction=val_fraction,
         n_structures=n_structures,
+        msa_cache_dir=msa_cache_dir,
+        max_msa_depth=max_msa_depth,
     )
     print(f"  Train: {len(train_ds):,} | Val: {len(val_ds):,}")
     return train_ds, val_ds
@@ -525,6 +529,8 @@ def train(args: argparse.Namespace) -> None:
             n_structures=args.n_structures,
             min_len=args.min_len,
             max_len=args.max_len,
+            msa_cache_dir=args.msa_cache,
+            max_msa_depth=args.max_msa_depth,
         )
     elif args.pdb_ids:
         pdb_list = [p.strip().upper() for p in args.pdb_ids.split(",")]
