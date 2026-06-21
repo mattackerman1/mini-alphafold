@@ -573,6 +573,7 @@ def train(args: argparse.Namespace) -> None:
         c_z=args.c_z,
         use_frames=True,
         use_triangle=not args.no_triangle,
+        dropout=args.dropout,
     ).to(device)
     print(f"Model: {model}")
 
@@ -747,6 +748,8 @@ def parse_args() -> argparse.Namespace:
                      help="Pair channel width c_z.")
     evo.add_argument("--no-triangle", action="store_true",
                      help="Disable triangle multiplicative updates.")
+    evo.add_argument("--dropout",     type=float, default=0.1,
+                     help="Dropout probability in Evoformer attention and MLP layers.")
 
     train_g = p.add_argument_group("training")
     train_g.add_argument("--epochs",       type=int,   default=10)
