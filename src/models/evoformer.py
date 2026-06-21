@@ -222,15 +222,17 @@ class MSATransition(nn.Module):
         expand:  Hidden dimension multiplier (default 4).
     """
 
-    def __init__(self, c_m: int, expand: int = 4) -> None:
+    def __init__(self, c_m: int, expand: int = 4, dropout: float = 0.0) -> None:
         super().__init__()
         inner = c_m * expand
         self.norm = nn.LayerNorm(c_m)
         self.net = nn.Sequential(
             nn.Linear(c_m, inner),
             nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(inner, c_m),
         )
+        self.drop = nn.Dropout(dropout)
 
     def forward(self, msa: Tensor) -> Tensor:
         """
@@ -239,7 +241,7 @@ class MSATransition(nn.Module):
         Returns:
             (B, N, L, c_m)
         """
-        return msa + self.net(self.norm(msa))
+        return msa + self.drop(self.net(self.norm(msa)))
 
 
 # ---------------------------------------------------------------------------
@@ -308,15 +310,17 @@ class PairTransition(nn.Module):
         expand: Hidden dimension multiplier (default 4).
     """
 
-    def __init__(self, c_z: int, expand: int = 4) -> None:
+    def __init__(self, c_z: int, expand: int = 4, dropout: float = 0.0) -> None:
         super().__init__()
         inner = c_z * expand
         self.norm = nn.LayerNorm(c_z)
         self.net = nn.Sequential(
             nn.Linear(c_z, inner),
             nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(inner, c_z),
         )
+        self.drop = nn.Dropout(dropout)
 
     def forward(self, pair: Tensor) -> Tensor:
         """
@@ -325,7 +329,7 @@ class PairTransition(nn.Module):
         Returns:
             (B, L, L, c_z)
         """
-        return pair + self.net(self.norm(pair))
+        return pair + self.drop(self.net(self.norm(pair)))
 
 
 # ---------------------------------------------------------------------------
@@ -454,7 +458,7 @@ class EvoformerBlock(nn.Module):
         super().__init__()
         self.row_attn        = RowAttention(c_m, nhead, dropout=dropout)
         self.col_attn        = ColumnAttention(c_m, nhead, dropout=dropout)
-        self.msa_transition  = MSATransition(c_m, expand=expand)
+        self.msa_transition  = MSATransition(c_m, expand=expand, dropout=dropout)
         self.outer_product   = OuterProductMean(c_m, c_z, c_outer=c_outer)
 
         if use_triangle:
@@ -464,7 +468,7 @@ class EvoformerBlock(nn.Module):
             self.tri_out = None  # type: ignore[assignment]
             self.tri_in  = None  # type: ignore[assignment]
 
-        self.pair_transition = PairTransition(c_z, expand=expand)
+        self.pair_transition = PairTransition(c_z, expand=expand, dropout=dropout)
 
     def forward(self, msa: Tensor, pair: Tensor) -> tuple[Tensor, Tensor]:
         """
