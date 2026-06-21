@@ -417,13 +417,15 @@ def make_lr_scheduler(
     optimizer: torch.optim.Optimizer,
     warmup_steps: int,
     total_steps: int,
+    min_lr_fraction: float = 0.1,
 ) -> torch.optim.lr_scheduler.LambdaLR:
-    """Step-level schedule: linearly warm up, then cosine decay to 0."""
+    """Step-level schedule: linearly warm up, then cosine decay to min_lr_fraction * base_lr."""
     def _lr_lambda(step: int) -> float:
         if warmup_steps > 0 and step < warmup_steps:
             return step / warmup_steps
         progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
-        return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
+        cosine = 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
+        return min_lr_fraction + (1.0 - min_lr_fraction) * cosine
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, _lr_lambda)
 
@@ -578,7 +580,8 @@ def train(args: argparse.Namespace) -> None:
 
     steps_per_epoch = max(1, len(train_loader))
     total_steps = steps_per_epoch * args.epochs
-    scheduler = make_lr_scheduler(optimizer, args.warmup_steps, total_steps)
+    scheduler = make_lr_scheduler(optimizer, args.warmup_steps, total_steps,
+                                   min_lr_fraction=args.min_lr / args.lr)
 
     # --- TensorBoard ---
     writer = _SummaryWriter(args.log_dir) if args.log_dir else _SummaryWriter()
@@ -748,7 +751,9 @@ def parse_args() -> argparse.Namespace:
     train_g = p.add_argument_group("training")
     train_g.add_argument("--epochs",       type=int,   default=10)
     train_g.add_argument("--batch-size",   type=int,   default=4)
-    train_g.add_argument("--lr",           type=float, default=1e-3)
+    train_g.add_argument("--lr",            type=float, default=1e-3)
+    train_g.add_argument("--min-lr",        type=float, default=1e-5,
+                         help="Minimum LR floor for cosine scheduler (default: 1e-5).")
     train_g.add_argument("--d-clamp",      type=float, default=10.0,
                          help="FAPE clamping distance (Angstroms).")
     train_g.add_argument("--warmup-steps", type=int,   default=0,
