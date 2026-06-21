@@ -518,7 +518,7 @@ def train(args: argparse.Namespace) -> None:
         train_ds, val_ds = build_cached_dataset(
             cache_dir=args.dataset_cache,
             n_pseudo=args.n_pseudo,
-            n_workers=args.num_workers,
+            n_workers=max(1, args.num_workers),
             seed=args.seed,
             n_structures=args.n_structures,
             min_len=args.min_len,
